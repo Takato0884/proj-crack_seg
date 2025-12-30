@@ -32,6 +32,33 @@ python src/main.py
 
 Artifacts (best model) and metrics will appear under `runs/` and, if W&B is enabled, in your W&B project.
 
+## Single image inference
+
+Use the CLI in `src/inference.py` to generate an annotated image (bounding boxes/masks) from a trained model.
+
+1) Auto-derived output directory (saves to `<runs>/<project>/<exp>_inference/image/`):
+
+```bash
+python src/inference.py \
+  --weights /Users/takato/proj-crack_seg/runs/crack_seg/exp01/weights/best.pt \
+  --image /Users/takato/proj-crack_seg/datasets/kanazawa/1_165711-165712_frame_2408.png
+```
+
+2) Explicit output directory (still saves inside `<out-dir>/image/`):
+
+```bash
+python src/inference.py \
+  --weights /Users/takato/proj-crack_seg/runs/crack_seg/exp01/weights/best.pt \
+  --image /Users/takato/proj-crack_seg/datasets/kanazawa/1_165711-165712_frame_2408.png \
+  --out-dir /Users/takato/proj-crack_seg/runs/crack_seg/exp01_inference
+```
+
+Optional flags:
+- `--conf 0.25` to adjust confidence threshold
+- `--line-width 2` to change box/mask thickness
+
+Output files will be written under the chosen directory’s `image/` folder.
+
 ## Notes
 - W&B fields in `ExpConfig`:
   - `use_wandb`: enable/disable W&B logging
