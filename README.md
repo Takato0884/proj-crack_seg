@@ -86,9 +86,9 @@ When you want to store all annotated images directly under a specific folder (no
 ```bash
 python src/inference.py \
   --weights /home/hayashi0884/proj-crack_seg/runs/crack_seg/exp01/weights/best.pt \
-  --image /home/hayashi0884/proj-crack_seg/datasets/kanazawa/images \
+  --image /home/hayashi0884/proj-crack_seg/datasets/subset_kanazawa \
   --out-dir /home/hayashi0884/proj-crack_seg/output \
-  --out-name exp01
+  --out-name subset_kanazawa
 ```
 
 Behavior:
