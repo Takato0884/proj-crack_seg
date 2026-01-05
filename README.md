@@ -1,3 +1,112 @@
+## How to Run (Training & Inference)
+
+This section explains how to run training (`src/main.py`) and inference (`src/inference.py`) in this repository. The environment assumes Linux and bash.
+
+### Prerequisites
+
+- Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+- Location of the dataset config YAML
+	- `datasets/crack-seg/crack-seg.yaml`
+- Location of pretrained models
+	- Segmentation: `weight/yolo11n-seg.pt`
+
+---
+
+### Train + Test (`src/main.py`)
+
+`src/main.py` trains with the given `data.yaml`, then evaluates the test split using the resulting `best.pt`. Outputs are saved under `runs/<project>/<segment>/<exp_name>/`.
+
+Minimal example (using defaults):
+
+```bash
+python src/main.py \
+	--data-path datasets/crack-seg/crack-seg.yaml \
+	--pretrained-model weight/yolo11n-seg.pt \
+	--runs-dir runs \
+	--project crack_seg \
+	--name exp01 \
+	--epochs 200 \
+	--batch 64 \
+	--patience 10 \
+	--seed 0 \
+	--imgsz 640
+```
+
+Key arguments:
+- `--data-path`: Dataset config (yaml), e.g., `datasets/crack-seg/crack-seg.yaml`
+- `--pretrained-model`: Pretrained weights, e.g., `weight/yolo11n-seg.pt`
+- `--runs-dir`: Root output dir, default `runs`
+- `--project`: Project name under runs, default `crack_seg`
+- `--name`: Experiment name, default `exp01`
+- `--exist-ok`: Overwrite existing experiment directory if present
+- `--epochs`, `--batch`, `--patience`, `--seed`, `--imgsz`: Ultralytics training settings
+- `--use-wandb`: Enable Weights & Biases logging (optional)
+- `--wandb-mode`: W&B mode (e.g., `offline`)
+
+Typical outputs:
+- Train directory: `runs/crack_seg/segment/exp01/`
+- Weights: `runs/crack_seg/segment/exp01/weights/best.pt`
+- Test evaluation: `runs/crack_seg/exp01_test/` (curves, confusion matrix, etc.)
+
+---
+
+### Inference (`src/inference.py`)
+
+`src/inference.py` runs inference on a single image or all images directly under a directory (non-recursive). You can either let Ultralytics save to its default output location or save to a custom directory.
+
+1) Save to Ultralytics default output (e.g., `runs/predict-seg/...`)
+
+```bash
+python src/inference.py \
+	--weights runs/crack_seg/segment/exp01/weights/best.pt \
+	--image datasets/crack-seg/images/test/1819.rf.d2d41865c85e1019dc3e8b9daf73c434.jpg
+```
+
+2) Save to a custom output directory (`--out-dir`)
+
+```bash
+python src/inference.py \
+	--weights runs/crack_seg/segment/exp01/weights/best.pt \
+	--image datasets/crack-seg/images/test \
+	--out-dir runs/crack_seg \
+	--out-name exp01_test_infer
+```
+
+The example above saves annotated images to `runs/crack_seg/exp01_test_infer/`.
+
+Optional:
+- `--save-polygons <path>`: Save predicted polygons in JSON Lines format (one JSON per image). Example:
+
+```bash
+python src/inference.py \
+	--weights runs/crack_seg/segment/exp01/weights/best.pt \
+	--image datasets/crack-seg/images/test \
+	--out-dir runs/crack_seg \
+	--out-name exp01_test_infer \
+	--save-polygons runs/crack_seg/exp01_test_infer/polygons.jsonl
+```
+
+Notes:
+- When a directory is provided, only the files directly under it are processed (non-recursive).
+- Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`
+- Saving uses OpenCV (`cv2`), which should be present via `requirements.txt`.
+
+---
+
+### Common paths
+
+- Dataset config: `datasets/crack-seg/crack-seg.yaml`
+- Pretrained weights: `weight/yolo11n-seg.pt`
+- Training outputs: `runs/crack_seg/segment/<exp_name>/`
+- Best weights: `runs/crack_seg/segment/<exp_name>/weights/best.pt`
+
+Adjust paths/arguments as needed for your environment.
+
 ## Commit/Message Prefix Rules
 
 Use the following prefixes in commit messages, PR titles, or change logs to make intent clear:
@@ -15,91 +124,3 @@ Use the following prefixes in commit messages, PR titles, or change logs to make
 # Crack Segmentation (Ultralytics YOLO) with W&B
 
 This repo trains a YOLO segmentation model on the `datasets/crack-seg` dataset and optionally logs metrics and artifacts to Weights & Biases (W&B).
-
-## Setup
-
-1. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-2. (Optional) Set your W&B API key:
-
-```bash
-export WANDB_API_KEY=your_api_key_here
-```
-
-If you prefer to avoid network calls, you can log offline:
-
-```bash
-export WANDB_MODE=offline
-```
-
-## Run
-
-Edit `src/main.py` to set `use_wandb=True` (and `wandb_mode="offline"` if desired), then run:
-
-```bash
-python src/main.py
-```
-
-Artifacts (best model) and metrics will appear under `runs/` and, if W&B is enabled, in your W&B project.
-
-## Inference
-
-Use the CLI in `src/inference.py` to generate annotated images (bounding boxes/masks) from a trained model.
-
-1) Single image (auto-derived output directory; saves to `<runs>/<project>/<exp>_inference/image/>`):
-
-```bash
-python src/inference.py \
-  --weights /home/hayashi0884/proj-crack_seg/runs/crack_seg/exp01/weights/best.pt \
-  --image /home/hayashi0884/proj-crack_seg/datasets/kanazawa/images/13_166356-165133_frame_1697.png
-```
-
-Optional flags:
-- `--conf 0.25` to adjust confidence threshold
-- `--line-width 2` to change box/mask thickness
-
-Output files will be written under the chosen directory’s `image/` folder.
-
-2) Directory of images (non-recursive; processes all images directly under the folder):
-
-```bash
-python src/inference.py \
-  --weights /home/hayashi0884/proj-crack_seg/runs/crack_seg/exp01/weights/best.pt \
-  --image /home/hayashi0884/proj-crack_seg/datasets/kanazawa/images
-```
-
-Notes:
-- Supported extensions: .jpg, .jpeg, .png, .bmp, .tif, .tiff
-- The script does not search subdirectories (non-recursive). If you need recursion, let me know and I’ll extend it.
-- For each image, the script prints the number of detections, e.g.,
-  - `No detections for <filename>`
-  - `Detections for <filename>: N`
-
-3) Save outputs to a custom directory (recommended)
-
-When you want to store all annotated images directly under a specific folder (no extra nested subfolders), use `--out-dir` and `--out-name`:
-
-```bash
-python src/inference.py \
-  --weights /home/hayashi0884/proj-crack_seg/runs/crack_seg/exp01/weights/best.pt \
-  --image /home/hayashi0884/proj-crack_seg/datasets/subset_kanazawa \
-  --out-dir /home/hayashi0884/proj-crack_seg/output \
-  --out-name subset_kanazawa
-```
-
-Behavior:
-- Outputs are saved directly in `/home/hayashi0884/proj-crack_seg/output/exp01/`.
-- If `--out-name` is omitted, it defaults to `inference` (e.g., `/output/inference/`).
-
-## Notes
-- W&B fields in `ExpConfig`:
-  - `use_wandb`: enable/disable W&B logging
-  - `wandb_project`: defaults to `project` if not provided
-  - `wandb_entity`: optional team/org name
-  - `wandb_run_name`: defaults to `name`
-  - `wandb_mode`: e.g., `offline` to avoid network calls
-- On first run, Ultralytics will create `runs/<project>/segment/<name>`.
