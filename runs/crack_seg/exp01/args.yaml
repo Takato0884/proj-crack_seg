@@ -5,7 +5,7 @@ data: /home/hayashi0884/proj-crack_seg/datasets/crack-seg/crack-seg.yaml
 epochs: 200
 time: null
 patience: 10
-batch: 64
+batch: 16
 imgsz: 640
 save: true
 save_period: -1

@@ -31,11 +31,79 @@ python src/main.py \
 	--project crack_seg \
 	--name exp01 \
 	--epochs 200 \
-	--batch 64 \
+	--batch 16 \
 	--patience 10 \
 	--seed 0 \
 	--imgsz 640
 ```
+
+```bash
+python src/main.py \
+	--data-path datasets/crack-seg/crack-seg.yaml \
+	--pretrained-model weight/yolo11s-seg.pt \
+	--runs-dir runs \
+	--project crack_seg \
+	--name exp02 \
+	--epochs 200 \
+	--batch 16 \
+	--patience 10 \
+	--seed 0 \
+	--imgsz 640
+```
+
+#### Enable W&B logging
+
+Weights & Biases can be enabled via flags. Make sure you have a W&B account and are logged in.
+
+1) Login (one-time)
+
+```bash
+wandb login
+```
+
+2) Run training with W&B enabled
+
+```bash
+python src/main.py \
+	--data-path datasets/crack-seg/crack-seg.yaml \
+	--pretrained-model weight/yolo11n-seg.pt \
+	--runs-dir runs \
+	--project crack_seg \
+	--name exp01 \
+	--epochs 200 \
+	--batch 16 \
+	--imgsz 640 \
+	--use-wandb \
+	--wandb-mode online
+```
+
+For YOLO11s-seg (lower memory settings):
+
+```bash
+python src/main.py \
+	--data-path datasets/crack-seg/crack-seg.yaml \
+	--pretrained-model weight/yolo11s-seg.pt \
+	--runs-dir runs \
+	--project crack_seg \
+	--name exp02 \
+	--epochs 200 \
+	--batch 16 \
+	--imgsz 640 \
+	--use-wandb \
+	--wandb-mode online
+```
+
+Notes:
+- `--use-wandb` turns on W&B logging inside `src/main.py`.
+- `--wandb-mode` supports `online`, `offline`, or `disabled` (default may be disabled if the flag isn't set).
+- If you prefer not to upload immediately, use offline mode and later sync:
+
+```bash
+python src/main.py ... --use-wandb --wandb-mode offline
+wandb sync wandb/*
+```
+
+Artifacts & logs typically appear under your W&B project (default name from code). Local run outputs remain in `runs/...` as before.
 
 Key arguments:
 - `--data-path`: Dataset config (yaml), e.g., `datasets/crack-seg/crack-seg.yaml`
@@ -121,6 +189,3 @@ Use the following prefixes in commit messages, PR titles, or change logs to make
 - docs: Documentation updates (e.g., README, comments, reports)
 - conf: Modify configuration files (e.g., `configs/`, environment settings)
 - chore: Miscellaneous tasks (e.g., dependency updates, `.gitignore` fixes)
-# Crack Segmentation (Ultralytics YOLO) with W&B
-
-This repo trains a YOLO segmentation model on the `datasets/crack-seg` dataset and optionally logs metrics and artifacts to Weights & Biases (W&B).
