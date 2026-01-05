@@ -342,20 +342,37 @@ def main(cfg: ExpConfig):
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Train and test YOLO segmentation")
+    parser.add_argument("--data-path", default="datasets/crack-seg/crack-seg.yaml", help="Path to data.yaml (e.g., datasets/crack-seg/crack-seg.yaml or datasets/subset_kanazawa/labels/data.yaml)")
+    parser.add_argument("--pretrained-model", default="weight/yolo11n-seg.pt", help="Path to pretrained model weights (e.g., weight/yolo11n-seg.pt)")
+    parser.add_argument("--runs-dir", default="runs", help="Root runs directory")
+    parser.add_argument("--project", default="crack_seg", help="Project name under runs")
+    parser.add_argument("--name", default="exp01", help="Experiment name")
+    parser.add_argument("--exist-ok", action="store_true", help="Overwrite existing experiment directory")
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch", type=int, default=64)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-mode", default=None, help="W&B mode, e.g., offline")
+    args = parser.parse_args()
+
     cfg = ExpConfig(
-        data_path="datasets/crack-seg/crack-seg.yaml",
-        pretrained_model="weight/yolo11n-seg.pt",
-        runs_dir="runs",
-        project="crack_seg",
-        name="exp01",
-        exist_ok=False,
-        epochs=200,
-        batch=64,
-        patience=10,
-        seed=0,
-        imgsz=640,
-        use_wandb=True,            # set True to enable W&B
-        wandb_mode=None,            # e.g., "offline" to log locally without network
+        data_path=args.data_path,
+        pretrained_model=args.pretrained_model,
+        runs_dir=args.runs_dir,
+        project=args.project,
+        name=args.name,
+        exist_ok=args.exist_ok,
+        epochs=args.epochs,
+        batch=args.batch,
+        patience=args.patience,
+        seed=args.seed,
+        imgsz=args.imgsz,
+        use_wandb=args.use_wandb,
+        wandb_mode=args.wandb_mode,
     )
     out = main(cfg)
     print("train_dir:", out["train_dir"])

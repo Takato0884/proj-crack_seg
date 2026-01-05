@@ -1,2 +1,4 @@
 ultralytics>=8.2.0
 wandb>=0.16.0
+pycocotools>=2.0.7
+opencv-python>=4.8.0

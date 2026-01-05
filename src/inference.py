@@ -15,6 +15,7 @@ def main():
 	parser.add_argument("--image", type=str, required=True, help="Path to an image file or a directory (non-recursive)")
 	parser.add_argument("--out-dir", type=str, default=None, help="Output root directory (e.g., /home/.../output)")
 	parser.add_argument("--out-name", type=str, default=None, help="Subfolder name to create under out-dir (e.g., exp01). If omitted, uses 'inference'.")
+	parser.add_argument("--save-polygons", type=str, default=None, help="Optional path to save predicted polygons as JSONL (one JSON per image)")
 	args = parser.parse_args()
 
 	model = YOLO(args.weights)
@@ -45,6 +46,7 @@ def main():
 	results = model.predict(source=sources, save=not custom_save)
 
 	# Print detections per image and optionally save outputs directly under save_dir
+	polygons_records = []
 	for r in results:
 		# Count detections: prefer masks if available, otherwise boxes
 		det_count = 0
@@ -65,6 +67,21 @@ def main():
 		else:
 			print(f"Detections for {filename}: {det_count}")
 
+		# Collect polygons for optional export
+		try:
+			poly_list = []
+			if hasattr(r, "masks") and r.masks is not None and hasattr(r.masks, "xy") and r.masks.xy is not None:
+				# r.masks.xy is a list of numpy arrays of shape (N,2)
+				for arr in r.masks.xy:
+					try:
+						coords = arr.reshape(-1).tolist()
+						poly_list.append(coords)
+					except Exception:
+						pass
+			polygons_records.append({"file_name": filename, "polygons": poly_list})
+		except Exception:
+			pass
+
 		# Save annotated image when custom output is requested
 		if custom_save:
 			try:
@@ -74,6 +91,20 @@ def main():
 				cv2.imwrite(str(out_path), plotted)
 			except Exception as e:
 				print(f"Failed to save {filename} to {save_dir}: {e}")
+
+	# Write polygons JSONL if requested
+	if args.save_polygons:
+		try:
+			out_path = Path(args.save_polygons).expanduser().resolve()
+			out_path.parent.mkdir(parents=True, exist_ok=True)
+			with open(out_path, "w", encoding="utf-8") as f:
+				for rec in polygons_records:
+					import json
+					f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+			print(f"Saved polygons to: {out_path}")
+		except Exception as e:
+			print(f"Failed to save polygons: {e}")
+
 
 
 if __name__ == "__main__":
