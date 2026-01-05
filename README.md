@@ -21,48 +21,7 @@ pip install -r requirements.txt
 
 `src/main.py` trains with the given `data.yaml`, then evaluates the test split using the resulting `best.pt`. Outputs are saved under `runs/<project>/<segment>/<exp_name>/`.
 
-Minimal example (using defaults):
-
-```bash
-python src/main.py \
-	--data-path datasets/crack-seg/crack-seg.yaml \
-	--pretrained-model weight/yolo11n-seg.pt \
-	--runs-dir runs \
-	--project crack_seg \
-	--name exp01 \
-	--epochs 200 \
-	--batch 16 \
-	--patience 10 \
-	--seed 0 \
-	--imgsz 640
-```
-
-```bash
-python src/main.py \
-	--data-path datasets/crack-seg/crack-seg.yaml \
-	--pretrained-model weight/yolo11s-seg.pt \
-	--runs-dir runs \
-	--project crack_seg \
-	--name exp02 \
-	--epochs 200 \
-	--batch 16 \
-	--patience 10 \
-	--seed 0 \
-	--imgsz 640
-```
-
-#### Enable W&B logging
-
-Weights & Biases can be enabled via flags. Make sure you have a W&B account and are logged in.
-
-1) Login (one-time)
-
-```bash
-wandb login
-```
-
-2) Run training with W&B enabled
-
+For crack-seg dataset:
 ```bash
 python src/main.py \
 	--data-path datasets/crack-seg/crack-seg.yaml \
@@ -77,33 +36,20 @@ python src/main.py \
 	--wandb-mode online
 ```
 
-For YOLO11s-seg (lower memory settings):
-
+For subset_kanazawa dataset:
 ```bash
 python src/main.py \
-	--data-path datasets/crack-seg/crack-seg.yaml \
-	--pretrained-model weight/yolo11s-seg.pt \
+	--data-path datasets/subset_kanazawa/data.yaml \
+	--pretrained-model weight/yolo11n-seg.pt \
 	--runs-dir runs \
-	--project crack_seg \
-	--name exp02 \
+	--project subset_kanazawa \
+	--name yolo_seg-11n \
 	--epochs 200 \
 	--batch 16 \
 	--imgsz 640 \
 	--use-wandb \
 	--wandb-mode online
 ```
-
-Notes:
-- `--use-wandb` turns on W&B logging inside `src/main.py`.
-- `--wandb-mode` supports `online`, `offline`, or `disabled` (default may be disabled if the flag isn't set).
-- If you prefer not to upload immediately, use offline mode and later sync:
-
-```bash
-python src/main.py ... --use-wandb --wandb-mode offline
-wandb sync wandb/*
-```
-
-Artifacts & logs typically appear under your W&B project (default name from code). Local run outputs remain in `runs/...` as before.
 
 Key arguments:
 - `--data-path`: Dataset config (yaml), e.g., `datasets/crack-seg/crack-seg.yaml`
@@ -121,59 +67,20 @@ Typical outputs:
 - Weights: `runs/crack_seg/segment/exp01/weights/best.pt`
 - Test evaluation: `runs/crack_seg/exp01_test/` (curves, confusion matrix, etc.)
 
----
+### Segmentation label summary (`src/preprocessing.py`)
 
-### Inference (`src/inference.py`)
-
-`src/inference.py` runs inference on a single image or all images directly under a directory (non-recursive). You can either let Ultralytics save to its default output location or save to a custom directory.
-
-1) Save to Ultralytics default output (e.g., `runs/predict-seg/...`)
+Summarize how many label files contain segmentation annotations (non-empty .txt) under `labels/train|val|test`:
 
 ```bash
-python src/inference.py \
-	--weights runs/crack_seg/segment/exp01/weights/best.pt \
-	--image datasets/crack-seg/images/test/1819.rf.d2d41865c85e1019dc3e8b9daf73c434.jpg
+python src/preprocessing.py summary-seg-labels \
+	--labels-root /home/hayashi0884/proj-crack_seg/datasets/subset_kanazawa/labels
 ```
 
-2) Save to a custom output directory (`--out-dir`)
-
-```bash
-python src/inference.py \
-	--weights runs/crack_seg/segment/exp01/weights/best.pt \
-	--image datasets/crack-seg/images/test \
-	--out-dir runs/crack_seg \
-	--out-name exp01_test_infer
-```
-
-The example above saves annotated images to `runs/crack_seg/exp01_test_infer/`.
-
-Optional:
-- `--save-polygons <path>`: Save predicted polygons in JSON Lines format (one JSON per image). Example:
-
-```bash
-python src/inference.py \
-	--weights runs/crack_seg/segment/exp01/weights/best.pt \
-	--image datasets/crack-seg/images/test \
-	--out-dir runs/crack_seg \
-	--out-name exp01_test_infer \
-	--save-polygons runs/crack_seg/exp01_test_infer/polygons.jsonl
-```
-
-Notes:
-- When a directory is provided, only the files directly under it are processed (non-recursive).
-- Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`
-- Saving uses OpenCV (`cv2`), which should be present via `requirements.txt`.
-
----
-
-### Common paths
-
-- Dataset config: `datasets/crack-seg/crack-seg.yaml`
-- Pretrained weights: `weight/yolo11n-seg.pt`
-- Training outputs: `runs/crack_seg/segment/<exp_name>/`
-- Best weights: `runs/crack_seg/segment/<exp_name>/weights/best.pt`
-
-Adjust paths/arguments as needed for your environment.
+Output fields per split and overall:
+- total: number of .txt files in the split
+- with_annotations: files that contain at least one non-empty line
+- without_annotations: empty files
+- percent_with: ratio of annotated files
 
 ## Commit/Message Prefix Rules
 

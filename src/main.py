@@ -33,6 +33,8 @@ class ExpConfig:
     wandb_entity: Optional[str] = None      # your W&B team/org; None for personal
     wandb_run_name: Optional[str] = None    # defaults to cfg.name if None
     wandb_mode: Optional[str] = None        # e.g., "offline" to avoid network
+    # behavior
+    test_only: bool = False                 # when True, skip training and only run test on provided weights
 
 
 def main(cfg: ExpConfig):
@@ -86,7 +88,7 @@ def main(cfg: ExpConfig):
             print(f"[wandb] init failed: {e}. Continuing without W&B.")
             wandb_run = None
 
-    # 2) Train
+    # 2) Train or test-only
     model = YOLO(cfg.pretrained_model)
 
     # If W&B is active, attach a callback to log epoch-level metrics
@@ -262,27 +264,34 @@ def main(cfg: ExpConfig):
             model.add_callback('on_train_epoch_end', _log_train_epoch)
         except Exception as e:
             print(f"[wandb] failed to add epoch callback: {e}")
-    model.train(
-        data=str(data_path),
-        task="segment",
-        epochs=cfg.epochs,
-        batch=cfg.batch,
-        patience=cfg.patience,
-        seed=cfg.seed,
-        imgsz=cfg.imgsz,
-        project=str(runs_root / cfg.project),  # runs/crack_seg
-        name=cfg.name,                         # exp01
-        exist_ok=cfg.exist_ok,
-    )
+    if not cfg.test_only:
+        model.train(
+            data=str(data_path),
+            task="segment",
+            epochs=cfg.epochs,
+            batch=cfg.batch,
+            patience=cfg.patience,
+            seed=cfg.seed,
+            imgsz=cfg.imgsz,
+            project=str(runs_root / cfg.project),  # runs/crack_seg
+            name=cfg.name,                         # exp01
+            exist_ok=cfg.exist_ok,
+        )
 
-    # Resolve best.pt from this training run
-    save_dir = Path(model.trainer.save_dir)         # runs/crack_seg/segment/exp01
-    best_pt = save_dir / "weights" / "best.pt"
-    if not best_pt.exists():
-        raise FileNotFoundError(f"best.pt not found: {best_pt}")
+        # Resolve best.pt from this training run
+        save_dir = Path(model.trainer.save_dir)         # runs/.../segment/<name>
+        best_pt = save_dir / "weights" / "best.pt"
+        if not best_pt.exists():
+            raise FileNotFoundError(f"best.pt not found: {best_pt}")
+        weights_for_test = str(best_pt)
+    else:
+        # Test-only: use the provided pretrained_model path directly
+        save_dir = Path(runs_root / cfg.project / cfg.name)  # nominal dir
+        save_dir.mkdir(parents=True, exist_ok=True)
+        weights_for_test = str(Path(cfg.pretrained_model).expanduser().resolve())
 
-    # 3) Test only (split='test' in your crack-seg.yaml)
-    best_model = YOLO(str(best_pt))
+    # 3) Test (split='test' in your data.yaml)
+    best_model = YOLO(weights_for_test)
     test_metrics = best_model.val(
         task="segment",
         split="test",
@@ -313,7 +322,7 @@ def main(cfg: ExpConfig):
             # Add some paths and phase info
             serializable_metrics.update({
                 "train_dir": str(save_dir),
-                "best_pt": str(best_pt),
+                "best_pt": weights_for_test,
                 "phase": "test",
             })
             # Log metrics without explicit step; test runs once and doesn't need epoch coupling
@@ -336,7 +345,7 @@ def main(cfg: ExpConfig):
 
     return {
         "train_dir": str(save_dir),
-        "best_pt": str(best_pt),
+        "best_pt": weights_for_test,
         "test_metrics": test_metrics,
     }
 
@@ -357,6 +366,7 @@ if __name__ == "__main__":
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--wandb-mode", default=None, help="W&B mode, e.g., offline")
+    parser.add_argument("--test-only", action="store_true", help="Skip training and only run test using the provided pretrained weights")
     args = parser.parse_args()
 
     cfg = ExpConfig(
@@ -373,6 +383,7 @@ if __name__ == "__main__":
         imgsz=args.imgsz,
         use_wandb=args.use_wandb,
         wandb_mode=args.wandb_mode,
+        test_only=args.test_only,
     )
     out = main(cfg)
     print("train_dir:", out["train_dir"])

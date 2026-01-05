@@ -331,6 +331,280 @@ def generate_labels_from_image_splits(
 	return res
 
 
+def summarize_segmentation_labels(labels_root: str | Path) -> dict:
+	"""
+	Summarize how many samples contain segmentation annotations under
+	labels_root/train|val|test. A sample is counted as "with_annotations"
+	if its corresponding .txt file contains at least one non-empty line.
+
+	Returns a dict with per-split and overall counts:
+	{
+	  'train': {total, with_annotations, without_annotations, percent_with},
+	  'val': {..},
+	  'test': {..},
+	  'overall': {total, with_annotations, without_annotations, percent_with}
+	}
+	"""
+	base = Path(labels_root).expanduser().resolve()
+	splits = ("train", "val", "test")
+	result: dict[str, dict[str, float | int]] = {}
+
+	grand_total = 0
+	grand_with = 0
+
+	for s in splits:
+		d = base / s
+		total = 0
+		with_ann = 0
+		if d.exists():
+			for p in sorted(d.glob("*.txt")):
+				total += 1
+				has = False
+				try:
+					with open(p, "r", encoding="utf-8", errors="ignore") as f:
+						for line in f:
+							if line.strip():
+								has = True
+								break
+				except Exception:
+					pass
+				with_ann += int(has)
+		without = total - with_ann
+		percent = (with_ann / total * 100.0) if total else 0.0
+		result[s] = {
+			"total": total,
+			"with_annotations": with_ann,
+			"without_annotations": without,
+			"percent_with": round(percent, 2),
+		}
+		grand_total += total
+		grand_with += with_ann
+
+	grand_without = grand_total - grand_with
+	grand_percent = (grand_with / grand_total * 100.0) if grand_total else 0.0
+	result["overall"] = {
+		"total": grand_total,
+		"with_annotations": grand_with,
+		"without_annotations": grand_without,
+		"percent_with": round(grand_percent, 2),
+	}
+
+	return result
+
+
+def convert_coco_to_yolo(
+	annotations_dir: str | Path | None = None,
+	annotations_file: str | Path | None = None,
+	use_segments: bool = False,
+	verbose: bool = False,
+	images_root: str | Path | None = None,
+) -> dict:
+	"""
+	Convert COCO annotations (instances_*.json) to YOLOv8 segmentation labels.
+
+	- annotations_dir: directory containing COCO JSON annotations (e.g., datasets/subset_kanazawa)
+	- annotations_file: specific COCO JSON file (e.g., instances_default.json)
+	- use_segments: use segmentation polygons when provided in COCO
+	- verbose: print additional logs
+
+	Returns a summary dict including paths and counters.
+	"""
+	import json
+	from collections import defaultdict
+	from typing import Any
+
+	try:
+		import numpy as np  # type: ignore
+		import cv2  # type: ignore
+		from pycocotools import mask as maskUtils  # type: ignore
+	except Exception as e:
+		raise RuntimeError(
+			"pycocotools and opencv-python are required for RLE conversion. Please install dependencies from requirements.txt"
+		) from e
+
+	# Resolve paths
+	ann_file: Path | None = None
+	ann_dir: Path
+	if annotations_file:
+		ann_file = Path(annotations_file).expanduser().resolve()
+		ann_dir = ann_file.parent
+	elif annotations_dir:
+		ann_dir = Path(annotations_dir).expanduser().resolve()
+		# Try to find a single instances_*.json in the directory
+		candidates = sorted([p for p in ann_dir.glob("instances*.json")])
+		if not candidates:
+			raise FileNotFoundError(f"No instances*.json found in {ann_dir}")
+		ann_file = candidates[0]
+	else:
+		raise ValueError("Provide annotations_file or annotations_dir for convert_coco_to_yolo")
+
+	assert ann_file and ann_file.exists(), f"Annotation JSON not found: {ann_file}"
+
+	# Output labels directory: create 'labels' sibling folder under the annotations dir
+	out_labels_dir = ann_dir / "labels"
+	out_labels_dir.mkdir(parents=True, exist_ok=True)
+	# Prepare split mapping if images_root is provided
+	split_names = ("train", "val", "test")
+	file_to_split: dict[str, str] = {}
+	if images_root is not None:
+		img_root = Path(images_root).expanduser().resolve()
+		if not img_root.exists():
+			raise FileNotFoundError(f"Images root not found: {img_root}")
+		# Pre-create split subfolders under labels
+		for s in split_names:
+			(out_labels_dir / s).mkdir(parents=True, exist_ok=True)
+		# Build filename -> split mapping by scanning images_root/train|val|test
+		for s in split_names:
+			split_dir = img_root / s
+			if not split_dir.exists():
+				continue
+			for root, dirs, files in os.walk(split_dir):
+				for fname in files:
+					# first-come mapping; warn on conflicts
+					if fname in file_to_split and file_to_split[fname] != s:
+						if verbose:
+							print(f"Warning: filename '{fname}' found in multiple splits ({file_to_split[fname]} and {s}); keeping first")
+						continue
+					file_to_split.setdefault(fname, s)
+
+	if verbose:
+		print(f"Loading COCO annotations: {ann_file}")
+
+	with open(ann_file, "r", encoding="utf-8") as f:
+		data = json.load(f)
+
+	# Build lookups
+	images: dict[int, dict[str, Any]] = {}
+	for img in data.get("images", []):
+		images[img["id"]] = img
+
+	categories: dict[int, dict[str, Any]] = {}
+	for cat in data.get("categories", []):
+		categories[cat["id"]] = cat
+
+	anns_by_image: dict[int, list[dict[str, Any]]] = defaultdict(list)
+	for ann in data.get("annotations", []):
+		anns_by_image[ann["image_id"]].append(ann)
+
+	def rle_to_contours(seg: dict, img_h: int, img_w: int) -> list[np.ndarray]:
+		# seg: {"counts": ..., "size": [h, w]} possibly encoded as bytes or str
+		# Ensure RLE is in the expected format for pycocotools
+		rle = {
+			"counts": seg.get("counts"),
+			"size": seg.get("size", [img_h, img_w]),
+		}
+		if isinstance(rle["counts"], list):
+			# Uncompressed RLE (rare) – convert to compressed
+			rle = maskUtils.frPyObjects(rle, rle["size"][0], rle["size"][1])
+		m = maskUtils.decode(rle)  # (H, W, 1) or (H, W)
+		if m.ndim == 3:
+			m = m[:, :, 0]
+		m = (m > 0).astype(np.uint8) * 255
+		# Find contours
+		contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+		return contours
+
+	def contour_to_normalized_points(cnt: np.ndarray, img_h: int, img_w: int) -> list[tuple[float, float]]:
+		# cnt shape: (N, 1, 2)
+		pts = cnt.reshape(-1, 2)
+		# Optionally approximate to reduce points
+		eps = 0.002 * cv2.arcLength(cnt, True)
+		approx = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2) if len(pts) > 50 else pts
+		# Normalize to [0,1]
+		return [(float(x) / img_w, float(y) / img_h) for (x, y) in approx]
+
+	written = 0
+	skipped = 0
+	for img_id, img in images.items():
+		file_name = img.get("file_name") or img.get("filename") or img.get("name")
+		if not file_name:
+			skipped += 1
+			continue
+		stem = Path(file_name).stem
+		img_w = int(img.get("width") or (img.get("w") or (img.get("size", [0, 0])[1])))
+		img_h = int(img.get("height") or (img.get("h") or (img.get("size", [0, 0])[0])))
+		if not img_w or not img_h:
+			# fallback from any associated annotation RLE size later
+			pass
+
+		lines: list[str] = []
+		for ann in anns_by_image.get(img_id, []):
+			cat_id = int(ann.get("category_id", 0))
+			cls = 0  # default single class
+			# If multiple categories exist, map to index by sorted cat IDs
+			if len(categories) > 1:
+				cls = sorted(categories.keys()).index(cat_id)
+
+			seg = ann.get("segmentation")
+			if seg is None:
+				continue
+
+			try:
+				if isinstance(seg, dict) and "counts" in seg and "size" in seg:
+					# RLE path
+					if not img_h or not img_w:
+						img_h, img_w = int(seg["size"][0]), int(seg["size"][1])
+					contours = rle_to_contours(seg, img_h, img_w)
+					for cnt in contours:
+						pts = contour_to_normalized_points(cnt, img_h, img_w)
+						if len(pts) < 3:
+							continue
+						# YOLOv8 segmentation: class followed by x y pairs
+						line = str(cls) + " " + " ".join(f"{x:.6f} {y:.6f}" for x, y in pts)
+						lines.append(line)
+				elif isinstance(seg, list) and seg and isinstance(seg[0], list):
+					# Polygon path already provided: [[x1,y1,...]]
+					# Use as-is if use_segments requested; otherwise skip
+					if use_segments:
+						for poly in seg:
+							coords = [(poly[i], poly[i + 1]) for i in range(0, len(poly) - 1, 2)]
+							if not (img_w and img_h):
+								# cannot normalize without size
+								continue
+							pts = [(float(x) / img_w, float(y) / img_h) for (x, y) in coords]
+							if len(pts) < 3:
+								continue
+							line = str(cls) + " " + " ".join(f"{x:.6f} {y:.6f}" for x, y in pts)
+							lines.append(line)
+					else:
+						# user did not request segments; skip
+						pass
+				else:
+					# Unsupported segmentation format
+					continue
+			except Exception as e:
+				if verbose:
+					print(f"Skip ann {ann.get('id')} for {file_name}: {e}")
+				continue
+
+		# Decide destination by split mapping when available
+		dest_dir = out_labels_dir
+		if images_root is not None:
+			split = file_to_split.get(Path(file_name).name)
+			if split in split_names:
+				dest_dir = out_labels_dir / split
+			elif verbose:
+				print(f"Info: '{file_name}' not found under {images_root}/train|val|test; writing to labels root")
+
+		# Write label file (empty allowed)
+		out_txt = dest_dir / f"{stem}.txt"
+		with open(out_txt, "w", encoding="utf-8") as f:
+			f.write("\n".join(lines))
+		written += 1
+
+	summary = {
+		"annotations_json": str(ann_file),
+		"labels_dir": str(out_labels_dir),
+		"images_processed": written,
+		"images_skipped": skipped,
+	}
+
+	print(
+		f"COCO RLE→YOLO conversion completed. JSON: {ann_file}, labels: {out_labels_dir}, images processed: {written}, skipped: {skipped}"
+	)
+	return summary
+
+
 
 if __name__ == "__main__":
 	import argparse
@@ -367,6 +641,11 @@ if __name__ == "__main__":
 	p_c2y.add_argument("--annotations-file", help="Specific COCO JSON file (e.g., instances_default.json)")
 	p_c2y.add_argument("--use-segments", action="store_true", help="Use segmentation polygons for YOLO labels")
 	p_c2y.add_argument("--verbose", action="store_true", help="Print additional conversion logs")
+	p_c2y.add_argument("--images-root", help="Images root containing train/val/test folders to route labels accordingly (e.g., datasets/crack-seg/images)")
+
+	# Subcommand: summarize segmentation labels
+	p_sum = sub.add_parser("summary-seg-labels", help="Summarize counts of samples with segmentation annotations under labels/train|val|test")
+	p_sum.add_argument("--labels-root", required=True, help="Root directory containing labels/train|val|test")
 
 
 	# (Removed Laplacian stats subcommand)
@@ -396,158 +675,15 @@ if __name__ == "__main__":
 		res = generate_labels_from_image_splits(labels_root=args.labels_root, image_root=args.image_root, xml_path=args.xml)
 		print("Labels generated:", res)
 	elif args.cmd == "coco-to-yolo":
-			# Custom converter to support COCO RLE masks → YOLOv8 segmentation labels
-			import json
-			from collections import defaultdict
-			from typing import Any
-
-			try:
-				import numpy as np  # type: ignore
-				import cv2  # type: ignore
-				from pycocotools import mask as maskUtils  # type: ignore
-			except Exception as e:
-				raise RuntimeError(
-					"pycocotools and opencv-python are required for RLE conversion. Please install dependencies from requirements.txt"
-				) from e
-
-			# Resolve paths
-			ann_file: Path | None = None
-			ann_dir: Path
-			if args.annotations_file:
-				ann_file = Path(args.annotations_file).expanduser().resolve()
-				ann_dir = ann_file.parent
-			elif args.annotations_dir:
-				ann_dir = Path(args.annotations_dir).expanduser().resolve()
-				# Try to find a single instances_*.json in the directory
-				candidates = sorted([p for p in ann_dir.glob("instances*.json")])
-				if not candidates:
-					raise FileNotFoundError(f"No instances*.json found in {ann_dir}")
-				ann_file = candidates[0]
-			else:
-				raise ValueError("Provide --annotations-file or --annotations-dir for coco-to-yolo")
-
-			assert ann_file and ann_file.exists(), f"Annotation JSON not found: {ann_file}"
-
-			# Output labels directory: create 'labels' sibling folder under the annotations dir
-			out_labels_dir = ann_dir / "labels"
-			out_labels_dir.mkdir(parents=True, exist_ok=True)
-
-			if args.verbose:
-				print(f"Loading COCO annotations: {ann_file}")
-
-			with open(ann_file, "r", encoding="utf-8") as f:
-				data = json.load(f)
-
-			# Build lookups
-			images: dict[int, dict[str, Any]] = {}
-			for img in data.get("images", []):
-				images[img["id"]] = img
-
-			categories: dict[int, dict[str, Any]] = {}
-			for cat in data.get("categories", []):
-				categories[cat["id"]] = cat
-
-			anns_by_image: dict[int, list[dict[str, Any]]] = defaultdict(list)
-			for ann in data.get("annotations", []):
-				anns_by_image[ann["image_id"]].append(ann)
-
-			def rle_to_contours(seg: dict, img_h: int, img_w: int) -> list[np.ndarray]:
-				# seg: {"counts": ..., "size": [h, w]} possibly encoded as bytes or str
-				# Ensure RLE is in the expected format for pycocotools
-				rle = {
-					"counts": seg.get("counts"),
-					"size": seg.get("size", [img_h, img_w]),
-				}
-				if isinstance(rle["counts"], list):
-					# Uncompressed RLE (rare) – convert to compressed
-					rle = maskUtils.frPyObjects(rle, rle["size"][0], rle["size"][1])
-				m = maskUtils.decode(rle)  # (H, W, 1) or (H, W)
-				if m.ndim == 3:
-					m = m[:, :, 0]
-				m = (m > 0).astype(np.uint8) * 255
-				# Find contours
-				contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-				return contours
-
-			def contour_to_normalized_points(cnt: np.ndarray, img_h: int, img_w: int) -> list[tuple[float, float]]:
-				# cnt shape: (N, 1, 2)
-				pts = cnt.reshape(-1, 2)
-				# Optionally approximate to reduce points
-				eps = 0.002 * cv2.arcLength(cnt, True)
-				approx = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2) if len(pts) > 50 else pts
-				# Normalize to [0,1]
-				return [(float(x) / img_w, float(y) / img_h) for (x, y) in approx]
-
-			written = 0
-			skipped = 0
-			for img_id, img in images.items():
-				file_name = img.get("file_name") or img.get("filename") or img.get("name")
-				if not file_name:
-					skipped += 1
-					continue
-				stem = Path(file_name).stem
-				img_w = int(img.get("width") or (img.get("w") or (img.get("size", [0, 0])[1])))
-				img_h = int(img.get("height") or (img.get("h") or (img.get("size", [0, 0])[0])))
-				if not img_w or not img_h:
-					# fallback from any associated annotation RLE size later
-					pass
-
-				lines: list[str] = []
-				for ann in anns_by_image.get(img_id, []):
-					cat_id = int(ann.get("category_id", 0))
-					cls = 0  # default single class
-					# If multiple categories exist, map to index by sorted cat IDs
-					if len(categories) > 1:
-						cls = sorted(categories.keys()).index(cat_id)
-
-					seg = ann.get("segmentation")
-					if seg is None:
-						continue
-
-					try:
-						if isinstance(seg, dict) and "counts" in seg and "size" in seg:
-							# RLE path
-							if not img_h or not img_w:
-								img_h, img_w = int(seg["size"][0]), int(seg["size"][1])
-							contours = rle_to_contours(seg, img_h, img_w)
-							for cnt in contours:
-								pts = contour_to_normalized_points(cnt, img_h, img_w)
-								if len(pts) < 3:
-									continue
-								# YOLOv8 segmentation: class followed by x y pairs
-								line = str(cls) + " " + " ".join(f"{x:.6f} {y:.6f}" for x, y in pts)
-								lines.append(line)
-						elif isinstance(seg, list) and seg and isinstance(seg[0], list):
-							# Polygon path already provided: [[x1,y1,...]]
-							# Use as-is if --use-segments requested; otherwise skip
-							if args.use_segments:
-								for poly in seg:
-									coords = [(poly[i], poly[i + 1]) for i in range(0, len(poly) - 1, 2)]
-									if not (img_w and img_h):
-										# cannot normalize without size
-										continue
-									pts = [(float(x) / img_w, float(y) / img_h) for (x, y) in coords]
-									if len(pts) < 3:
-										continue
-									line = str(cls) + " " + " ".join(f"{x:.6f} {y:.6f}" for x, y in pts)
-									lines.append(line)
-							else:
-								# user did not request segments; skip
-								pass
-						else:
-							# Unsupported segmentation format
-							continue
-					except Exception as e:
-						if args.verbose:
-							print(f"Skip ann {ann.get('id')} for {file_name}: {e}")
-						continue
-
-				# Write label file (empty allowed)
-				out_txt = out_labels_dir / f"{stem}.txt"
-				with open(out_txt, "w", encoding="utf-8") as f:
-					f.write("\n".join(lines))
-				written += 1
-
-			print(
-				f"COCO RLE→YOLO conversion completed. JSON: {ann_file}, labels: {out_labels_dir}, images processed: {written}, skipped: {skipped}"
+			# Call the refactored converter
+			summary = convert_coco_to_yolo(
+				annotations_dir=args.annotations_dir,
+				annotations_file=args.annotations_file,
+				use_segments=args.use_segments,
+				verbose=args.verbose,
+				images_root=args.images_root,
 			)
+			print("Summary:", summary)
+	elif args.cmd == "summary-seg-labels":
+		res = summarize_segmentation_labels(labels_root=args.labels_root)
+		print("Summary:", res)
